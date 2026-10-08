@@ -23,14 +23,16 @@ body{padding-bottom:calc(150px + env(safe-area-inset-bottom))}
 header{display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:3px solid var(--red)}
 header img{height:26px}
 header span{font-family:EFB;font-size:15px;letter-spacing:.5px;color:var(--muted);margin-left:auto}
-nav{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:14px 16px 4px}
-nav button{font-family:EFB;font-size:17px;padding:14px 8px;border-radius:12px;border:2px solid var(--line);
+nav{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;padding:14px 16px 4px}
+nav button{font-family:EFB;font-size:15px;line-height:1.15;padding:12px 6px;border-radius:12px;border:2px solid var(--line);
   background:var(--panel);color:var(--muted)}
 nav button.on{border-color:var(--red);background:var(--red);color:#fff}
 .seg{display:grid;grid-template-columns:1fr 1fr;gap:6px;background:var(--panel);padding:5px;border-radius:12px;margin-top:4px}
 .seg button{font-family:EFB;font-size:16px;padding:11px 6px;border-radius:9px;border:0;background:transparent;color:var(--muted)}
-#cPerf.on{background:var(--red);color:#fff}
-#cChal.on{background:#fff;color:#101212}
+#cPerf.on,#sPerf.on{background:var(--red);color:#fff}
+#cChal.on,#sChal.on{background:#fff;color:#101212}
+.status{font-size:14px;color:var(--muted);margin:12px 0 0}
+.status b{color:var(--text)}
 .preview{padding:14px 16px;display:flex;justify-content:center}
 .preview canvas{width:min(62vw,300px);aspect-ratio:9/16;height:auto;border-radius:14px;box-shadow:0 8px 30px #000a;background:#000}
 .wrap{padding:0 16px;max-width:560px;margin:0 auto}
@@ -100,6 +102,7 @@ details li{margin-bottom:8px}
 <nav>
   <button id="tPodium" class="on">Podium of the week</button>
   <button id="tDotd">Driver of the night</button>
+  <button id="tStand">Standings</button>
 </nav>
 
 <div class="preview"><canvas id="out" width="1080" height="1920"></canvas></div>
@@ -118,6 +121,17 @@ details li{margin-bottom:8px}
     <label class="f" for="date">Date</label>
     <input type="text" id="date" autocomplete="off">
     <div id="dotdCards"></div>
+  </section>
+  <section id="formStand" class="hidden">
+    <div class="seg" role="group" aria-label="Catégorie">
+      <button id="sPerf" class="on">Performance</button>
+      <button id="sChal">Challenger</button>
+    </div>
+    <label class="f" for="standN">Après le mardi n°</label>
+    <input type="text" id="standN" inputmode="numeric" autocomplete="off">
+    <p class="status" id="standStatus">Chargement du classement…</p>
+    <div class="btns" style="margin-top:10px"><button class="sbtn" id="standReload">Recharger le classement</button></div>
+    <p class="hint">Le classement est lu en direct sur la page publique. Fais une image par catégorie et poste-les dans le groupe WhatsApp (ou en story).</p>
   </section>
 
   <details>
@@ -178,8 +192,9 @@ const newSlot = () => ({ img: null, zoom: 1, ox: 0, oy: 0, name: '', handle: '',
 const CATS = { performance: 'PERFORMANCE', challenger: 'CHALLENGER' };   // Tuesday Championship categories
 const newPods = () => ({ performance: [newSlot(), newSlot(), newSlot()], challenger: [newSlot(), newSlot(), newSlot()] });
 const S = {
-  mode: 'podium', cat: 'performance',
-  week: '', date: '',
+  mode: 'podium', cat: 'performance', scat: 'performance',
+  week: '', date: '', standN: '',
+  stand: null,                // public standings: { n, perf: [...], chal: [...] }
   pods: newPods(),            // P1, P2, P3 for each category
   dotd: [newSlot()],
   get podium() { return this.pods[this.cat]; },
@@ -190,7 +205,7 @@ function saveText() {
   const keep = s => ({ name: s.name, handle: s.handle, skip: s.skip });
   try {
     localStorage.setItem(STORE, JSON.stringify({
-      day: defaultDate(), mode: S.mode, cat: S.cat, week: S.week, date: S.date,
+      day: defaultDate(), mode: S.mode, cat: S.cat, scat: S.scat, week: S.week, date: S.date,
       performance: S.pods.performance.map(keep),
       challenger: S.pods.challenger.map(keep),
       dotd: S.dotd.map(keep),
@@ -201,10 +216,11 @@ function loadText() {
   try {
     const d = JSON.parse(localStorage.getItem(STORE) || 'null');
     if (!d) return;
-    S.mode = d.mode === 'dotd' ? 'dotd' : 'podium';
+    const mode = ['dotd', 'standings'].includes(d.mode) ? d.mode : 'podium';
+    S.mode = mode;
     S.cat = d.cat === 'challenger' ? 'challenger' : 'performance';
+    S.scat = d.scat === 'challenger' ? 'challenger' : 'performance';
     if (d.day !== defaultDate()) return;   // keep drafts for the same day only
-    S.mode = d.mode === 'dotd' ? 'dotd' : 'podium';
     S.week = d.week || ''; S.date = d.date || '';
     for (const c of Object.keys(CATS))
       (d[c] || []).forEach((v, i) => { if (S.pods[c][i]) Object.assign(S.pods[c][i], v); });
@@ -316,6 +332,69 @@ function matchPilots(q) {
 }
 
 // ---------- helpers ----------
+// ---------- standings (public page of the Club League standings sheet) ----------
+// the tab ids change when the workbook is re-imported: find the "Standings" tab in the published page
+const STAND_PUB = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRccC75g09E0qECgMvDihUIWC1VhcjCMnKe3hRLk0dit2C7XWAC3OV-5W12qxR8VHrjWrsEF4xZzzbn';
+const SSTORE = 'ef-eupen-standings-v1';
+const QUOTA = { performance: 14, challenger: 10 };
+const Q_START = new Date(2026, 9, 6);   // Tuesday 1 of the autumn quarter
+function parseStandings(t) {
+  const rows = csvRows(t);
+  let n = 0;
+  rows.slice(0, 4).forEach(r => r.forEach(c => { const m = /AFTER TUESDAY\s+(\d+)/i.exec(c || ''); if (m) n = +m[1]; }));
+  const hi = rows.findIndex(r => r.filter(c => (c || '').trim() === 'Rank').length >= 2);
+  if (hi < 0) return null;
+  const starts = rows[hi].map((c, i) => ((c || '').trim() === 'Rank' ? i : -1)).filter(i => i >= 0);
+  const col = (s, name) => { for (let i = s; i < s + 12; i++) if ((rows[hi][i] || '').trim() === name) return i; return -1; };
+  const read = s => {
+    const cD = col(s, 'Driver'), cT = col(s, 'Tuesdays'), cP = col(s, 'TOTAL'), cF = col(s, 'Final?');
+    const out = [];
+    for (const r of rows.slice(hi + 1)) {
+      const name = (r[cD] || '').trim();
+      if (!name) break;
+      out.push({ rank: +(r[s] || 0) || out.length + 1, name, tue: +(r[cT] || 0), total: +(r[cP] || 0),
+                 fin: /yes/i.test(r[cF] || '') });
+    }
+    return out;
+  };
+  return { n, perf: read(starts[0]), chal: starts[1] != null ? read(starts[1]) : [] };
+}
+function useStandings(d, live) {
+  if (!d) return;
+  S.stand = d;
+  if (live || !S.standN) S.standN = d.n ? String(d.n) : S.standN;
+  const inp = document.getElementById('standN'); if (inp) inp.value = S.standN;
+  const st = document.getElementById('standStatus');
+  if (st) st.innerHTML = (live ? 'Classement à jour' : 'Classement en mémoire (hors ligne)') +
+    (d.n ? ' : après le mardi <b>' + d.n + '</b>' : '') + ' · <b>' + d.perf.length + '</b> Performance, <b>' +
+    d.chal.length + '</b> Challenger';
+  render();
+}
+async function loadStandings() {
+  try { useStandings(parseStandings(localStorage.getItem(SSTORE) || ''), false); } catch (e) {}
+  try {
+    const h = await (await fetch(STAND_PUB + '/pubhtml', { cache: 'no-store' })).text();
+    const m = /name:\s*"Standings",\s*pageUrl:\s*"[^"]*?gid=(\d+)/.exec(h);
+    if (!m) throw new Error('no Standings tab');
+    const r = await fetch(STAND_PUB + '/pub?gid=' + m[1] + '&single=true&output=csv&t=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) throw new Error(r.status);
+    const t = await r.text(), d = parseStandings(t);
+    if (!d) throw new Error('unreadable');
+    try { localStorage.setItem(SSTORE, t); } catch (e) {}
+    useStandings(d, true);
+  } catch (e) {
+    const st = document.getElementById('standStatus');
+    if (st && !S.stand) st.textContent = 'Classement introuvable. Vérifie la connexion puis touche « Recharger ».';
+    else if (st) toast('Pas de réseau : classement en mémoire');
+  }
+}
+function splitName(full) {   // sheet = "NOM Prénom"; leading capitals = surname, else first word
+  const w = full.trim().split(/\s+/);
+  let k = w.findIndex(x => x !== x.toUpperCase() || !/\p{L}{2}/u.test(x));
+  if (k <= 0) k = 1;
+  return { first: w.slice(k).join(' '), last: w.slice(0, k).join(' ').toUpperCase() };
+}
+
 function isoWeek(d) {
   const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
   const day = t.getUTCDay() || 7;
@@ -517,12 +596,94 @@ function drawDotd(ctx) {
   drawChecker(ctx, 1720, 2, 24, .14);
 }
 
+function drawStandings(ctx) {
+  drawBackground(ctx);
+  drawHeader(ctx);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#fff'; fitFont(ctx, 'STANDINGS', 960, 150, true); ctx.fillText('STANDINGS', W / 2, 480);
+  const n = parseInt(S.standN, 10);
+  let sub = 'AUTUMN 2026';
+  if (n > 0) {
+    const d = new Date(Q_START.getFullYear(), Q_START.getMonth(), Q_START.getDate() + (n - 1) * 7);   // calendar days: safe across the DST change
+    sub = 'AFTER TUESDAY ' + n + ' · ' + pad(d.getDate()) + '.' + pad(d.getMonth() + 1);
+  }
+  ctx.fillStyle = RED; fitFont(ctx, sub, 900, 58, true); ctx.fillText(sub, W / 2, 552);
+  // category tag
+  const perf = S.scat === 'performance', cat = CATS[S.scat];
+  ctx.font = font(40, true);
+  const cw = ctx.measureText(cat).width + 70;
+  ctx.fillStyle = perf ? RED : '#fff'; para(ctx, (W - cw) / 2, 584, cw, 58, 10); ctx.fill();
+  ctx.fillStyle = perf ? '#fff' : BLACK; ctx.fillText(cat, W / 2, 627);
+  // table
+  const list = S.stand ? (perf ? S.stand.perf : S.stand.chal) : [];
+  const quota = QUOTA[S.scat], MAX = 16, rows = list.slice(0, MAX);
+  const top = 690, bottom = 1712, x0 = 60, x1 = W - 60;
+  ctx.font = font(26, true); ctx.fillStyle = 'rgba(255,255,255,.55)';
+  ctx.textAlign = 'left'; ctx.fillText('#', x0 + 30, top + 30); ctx.fillText('DRIVER', x0 + 128, top + 30);
+  ctx.textAlign = 'center'; ctx.fillText('TUE', 846, top + 30);
+  ctx.textAlign = 'right'; ctx.fillText('PTS', x1 - 14, top + 30);
+  if (!rows.length) {
+    ctx.textAlign = 'center'; ctx.fillStyle = 'rgba(255,255,255,.75)'; ctx.font = font(44, true);
+    ctx.fillText(S.stand ? 'NO RESULTS YET' : 'LOADING…', W / 2, 1100);
+  }
+  // few drivers: taller rows and bigger type, easier to read on a phone
+  const rh = Math.max(56, Math.min(96, Math.floor((bottom - top - 54) / Math.max(rows.length, 1))));
+  const fName = Math.min(48, Math.round(rh * .56)), fPts = Math.min(56, Math.round(rh * .64));
+  const fRank = Math.min(44, Math.round(rh * .5)), fTue = Math.min(38, Math.round(rh * .46)), ch = Math.round(rh * .7);
+  const ring = ['gold', 'silver', 'bronze'];
+  rows.forEach((p, i) => {
+    const y = top + 54 + i * rh, mid = y + rh / 2;
+    if (i % 2 === 0) { ctx.fillStyle = 'rgba(255,255,255,.05)'; ctx.fillRect(x0, y, x1 - x0, rh); }
+    // rank chip: metal for the top 3
+    const r3 = p.rank <= 3 ? RINGS[ring[p.rank - 1]] : null;
+    if (r3) { ctx.fillStyle = metal(ctx, x0 + 6, 0, x0 + 96, 0, r3); para(ctx, x0 + 12, mid - ch / 2, 78, ch, 8); ctx.fill(); }
+    ctx.textAlign = 'center'; ctx.fillStyle = r3 ? BLACK : '#fff'; ctx.font = font(fRank, true);
+    ctx.fillText(String(p.rank), x0 + 51, mid + fRank * .36);
+    // name: first name light, surname bold
+    const nm = splitName(p.name);
+    ctx.textAlign = 'left'; let x = x0 + 128;
+    const maxW = 640;
+    let fs = fName;
+    const measure = () => { ctx.font = font(fs, false); const a = nm.first ? ctx.measureText(nm.first + ' ').width : 0;
+                            ctx.font = font(fs, true); return a + ctx.measureText(nm.last).width; };
+    while (measure() > maxW && fs > 22) fs -= 2;
+    if (nm.first) { ctx.font = font(fs, false); ctx.fillStyle = 'rgba(255,255,255,.88)'; ctx.fillText(nm.first + ' ', x, mid + fs * .36);
+                    x += ctx.measureText(nm.first + ' ').width; }
+    ctx.font = font(fs, true); ctx.fillStyle = '#fff'; ctx.fillText(nm.last, x, mid + fs * .36);
+    // Tuesdays and points
+    ctx.textAlign = 'center'; ctx.font = font(fTue, false); ctx.fillStyle = 'rgba(255,255,255,.7)';
+    ctx.fillText(String(p.tue || ''), 846, mid + fTue * .36);
+    ctx.textAlign = 'right'; ctx.font = font(fPts, true); ctx.fillStyle = r3 ? r3[0] : '#fff';
+    ctx.fillText(String(Math.round(p.total)), x1 - 14, mid + fPts * .36);
+    // qualification line under the last place that goes to the final
+    if (i === quota - 1 && list.length > quota) {
+      const ly = y + rh;
+      ctx.strokeStyle = RED; ctx.lineWidth = 4; ctx.setLineDash([18, 12]);
+      ctx.beginPath(); ctx.moveTo(x0, ly); ctx.lineTo(x1, ly); ctx.stroke(); ctx.setLineDash([]);
+      const lab = 'TOP ' + quota + ' QUALIFY FOR THE FINAL';
+      ctx.font = font(22, true); const lw = ctx.measureText(lab).width + 28;
+      ctx.fillStyle = RED; ctx.fillRect(x1 - lw, ly - 15, lw, 30);
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.fillText(lab, x1 - lw / 2, ly + 8);
+    }
+  });
+  if (list.length > MAX) {
+    ctx.textAlign = 'center'; ctx.font = font(26, false); ctx.fillStyle = 'rgba(255,255,255,.7)';
+    ctx.fillText('+ ' + (list.length - MAX) + ' more drivers · full standings in the group description', W / 2, bottom + 4);
+  }
+  // banner
+  const FLOOR = 1740;
+  ctx.fillStyle = RED; ctx.fillRect(0, FLOOR, W, 66);
+  ctx.textAlign = 'center'; ctx.fillStyle = '#fff'; fitFont(ctx, 'CLUB LEAGUE  ·  #clubleague', 980, 40, true);
+  ctx.fillText('CLUB LEAGUE  ·  #clubleague', W / 2, FLOOR + 47);
+  drawChecker(ctx, FLOOR + 80, 2, 24, .14);
+}
+
 const out = document.getElementById('out'), octx = out.getContext('2d');
 let blob = null, blobTimer = 0;
 function render() {
   if (!IMG.track) return;   // still booting
   blob = null;
-  (S.mode === 'podium' ? drawPodium : drawDotd)(octx);
+  ({ podium: drawPodium, dotd: drawDotd, standings: drawStandings }[S.mode] || drawPodium)(octx);
   clearTimeout(blobTimer);
   blobTimer = setTimeout(() => out.toBlob(b => { blob = b; }, 'image/jpeg', .95), 350);
 }
@@ -609,8 +770,14 @@ function setMode(m) {
   S.mode = m;
   document.getElementById('tPodium').classList.toggle('on', m === 'podium');
   document.getElementById('tDotd').classList.toggle('on', m === 'dotd');
+  document.getElementById('tStand').classList.toggle('on', m === 'standings');
   document.getElementById('formPodium').classList.toggle('hidden', m !== 'podium');
   document.getElementById('formDotd').classList.toggle('hidden', m !== 'dotd');
+  document.getElementById('formStand').classList.toggle('hidden', m !== 'standings');
+  // standings: nothing to tag, nothing to reset
+  document.getElementById('copy').classList.toggle('hidden', m === 'standings');
+  document.getElementById('reset').classList.toggle('hidden', m === 'standings');
+  if (m === 'standings' && !S.standLoaded) { S.standLoaded = true; loadStandings(); }
   saveText(); render();
 }
 
@@ -697,7 +864,9 @@ document.getElementById('edRedo').onclick = () => { const s = edSlot; closeEdito
 const toastEl = document.getElementById('toast'); let toastT = 0;
 function toast(msg) { toastEl.textContent = msg; toastEl.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => toastEl.classList.remove('show'), 2600); }
 function fileName() {
-  const tag = S.mode === 'podium' ? 'podium-' + S.cat + '-' + (S.week || 'week') : 'driver-of-the-night-' + (S.date || 'day');
+  const tag = S.mode === 'podium' ? 'podium-' + S.cat + '-' + (S.week || 'week')
+    : S.mode === 'standings' ? 'club-league-standings-' + S.scat + '-tuesday-' + (S.standN || 'x')
+    : 'driver-of-the-night-' + (S.date || 'day');
   return 'ef-eupen-' + tag.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-+$/, '') + '.jpg';
 }
 function getBlob() {
@@ -757,6 +926,21 @@ document.getElementById('cPerf').onclick = () => setCat('performance');
 document.getElementById('cChal').onclick = () => setCat('challenger');
 document.getElementById('tPodium').onclick = () => setMode('podium');
 document.getElementById('tDotd').onclick = () => setMode('dotd');
+document.getElementById('tStand').onclick = () => setMode('standings');
+function setScat(c) {
+  S.scat = c;
+  document.getElementById('sPerf').classList.toggle('on', c === 'performance');
+  document.getElementById('sChal').classList.toggle('on', c === 'challenger');
+  saveText(); render();
+}
+document.getElementById('sPerf').onclick = () => setScat('performance');
+document.getElementById('sChal').onclick = () => setScat('challenger');
+const sn = document.getElementById('standN');
+sn.addEventListener('input', () => { S.standN = sn.value.replace(/\D/g, '').slice(0, 2); sn.value = S.standN; render(); });
+document.getElementById('standReload').onclick = () => {
+  document.getElementById('standStatus').textContent = 'Chargement du classement…';
+  S.standN = ''; loadStandings();
+};
 const wk = document.getElementById('week'), dt = document.getElementById('date');
 wk.addEventListener('input', () => { S.week = wk.value; saveText(); render(); });
 dt.addEventListener('input', () => { S.date = dt.value; saveText(); render(); });
@@ -772,7 +956,7 @@ dt.addEventListener('input', () => { S.date = dt.value; saveText(); render(); })
   if (!S.week) S.week = defaultWeek();
   if (!S.date) S.date = defaultDate();
   wk.value = S.week; dt.value = S.date;
-  buildCards('dotd'); setCat(S.cat);
+  buildCards('dotd'); setCat(S.cat); setScat(S.scat);
   setMode(S.mode);
   allSlots().forEach(s => ensurePhoto(s));   // names restored from the draft get their photo back
 })();
